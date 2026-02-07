@@ -102,7 +102,7 @@
           fi
         '';
       in
-      {
+      rec {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "gwt-wrapper";
           version = "0.0.1";
@@ -112,6 +112,16 @@
             cp ${shWrapper} $out/share/gwt/gwt.sh
             cp ${fishWrapper} $out/share/gwt/gwt.fish
           '';
+        };
+        # nix run .#gwt -L
+        apps.gwt = {
+          type = "app";
+          program = pkgs.lib.getExe (
+            pkgs.writeShellScriptBin "gwt-demo" ''
+              ${pkgs.bashInteractive}/bin/bash -i -c \
+              "source ${packages.default}/share/gwt/gwt.sh && gwt"
+            ''
+          );
         };
       }
     );

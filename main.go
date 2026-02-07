@@ -59,14 +59,14 @@ func runJump(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	worktrees, err := getWorktreesSorted() // <--- CHANGED
+	worktrees, err := getWorktreesSorted()
 	if err != nil {
 		fail(err)
 	}
 
 	idx, err := fuzzyfinder.Find(
 		worktrees,
-		func(i int) string { return worktrees[i] },
+		func(i int) string { return worktrees[i].Display },
 		// "Reverse" feel: Prompt at top (Search moves down) is the default in some libs,
 		// but fuzzyfinder standard is bottom-up.
 		// We use standard settings but the list is pre-sorted with current dir at top.
@@ -74,8 +74,7 @@ func runJump(cmd *cobra.Command, args []string) {
 			if i == -1 {
 				return ""
 			}
-			path := strings.Fields(worktrees[i])[0]
-			out, _ := exec.Command("git", "-C", path, "status", "--short").Output()
+			out, _ := exec.Command("git", "-C", worktrees[i].AbsPath, "status", "--short").Output()
 			return string(out)
 		}),
 	)
@@ -83,8 +82,7 @@ func runJump(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	path := strings.Fields(worktrees[idx])[0]
-	printPath(path)
+	printPath(worktrees[idx].AbsPath)
 }
 
 func runAdd(cmd *cobra.Command, args []string) {
@@ -122,13 +120,12 @@ func runRemove(cmd *cobra.Command, args []string) {
 	// Use FindMulti instead of Find
 	idxs, err := fuzzyfinder.FindMulti(
 		worktrees,
-		func(i int) string { return worktrees[i] },
+		func(i int) string { return worktrees[i].Display },
 		fuzzyfinder.WithPreviewWindow(func(i int, w, h int) string {
 			if i == -1 {
 				return ""
 			}
-			path := strings.Fields(worktrees[i])[0]
-			out, _ := exec.Command("git", "-C", path, "status", "--short").Output()
+			out, _ := exec.Command("git", "-C", worktrees[i].AbsPath, "status", "--short").Output()
 			return string(out)
 		}),
 	)
@@ -139,7 +136,7 @@ func runRemove(cmd *cobra.Command, args []string) {
 	// Collect paths to remove
 	var pathsToRemove []string
 	for _, i := range idxs {
-		pathsToRemove = append(pathsToRemove, strings.Fields(worktrees[i])[0])
+		pathsToRemove = append(pathsToRemove, worktrees[i].AbsPath)
 	}
 
 	// Confirm bulk action
@@ -191,10 +188,18 @@ func runJumpDefault(cmd *cobra.Command, args []string) {
 
 // --- Helpers ---
 
-func getWorktreesSorted() ([]string, error) {
+type WorktreeInfo struct {
+	AbsPath string // absolute path for git commands and cd
+	Display string // worktree name for fuzzy finder UI
+	Commit  string // commit hash
+	Branch  string // branch name (if any)
+	IsCwd   bool   // true if this is the current working directory
+}
+
+func getWorktreesSorted() ([]WorktreeInfo, error) {
 	out, err := exec.Command("git", "worktree", "list").Output()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list worktrees: %w", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
@@ -204,30 +209,95 @@ func getWorktreesSorted() ([]string, error) {
 	// Resolve symlinks just in case
 	cwd, _ = filepath.EvalSymlinks(cwd)
 
-	// Sort: Current dir first, then alphabetical
-	sort.SliceStable(lines, func(i, j int) bool {
-		pathI := strings.Fields(lines[i])[0]
-		pathJ := strings.Fields(lines[j])[0]
+	// Get git root directory to make paths relative
+	gitRootOut, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get git root: %w", err)
+	}
+	gitRoot := strings.TrimSpace(string(gitRootOut))
 
-		// Check if pathI matches CWD
-		if pathI == cwd {
+	// Parse worktree info and extract names
+	type lineInfo struct {
+		absPath string
+		name    string
+		commit  string
+		branch  string
+		isCwd   bool
+	}
+	lineInfos := make([]lineInfo, 0, len(lines))
+
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			absPath := fields[0]
+			relPath, err := filepath.Rel(gitRoot, absPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get relative path for %s: %w", absPath, err)
+			}
+			// Worktree name is the last component of the path
+			name := filepath.Base(absPath)
+			// Check if this is the current worktree
+			isCwd := relPath == "." || relPath == "./"
+			// Extract commit hash (second field)
+			commit := ""
+			if len(fields) > 1 {
+				commit = fields[1]
+			}
+			// Extract branch/ref info from brackets or parentheses
+			branch := ""
+			if idx := strings.Index(line, "["); idx != -1 {
+				end := strings.Index(line[idx:], "]")
+				if end != -1 {
+					branch = line[idx+1 : idx+end]
+				}
+			} else if idx := strings.Index(line, "("); idx != -1 {
+				end := strings.Index(line[idx:], ")")
+				if end != -1 {
+					branch = line[idx+1 : idx+end]
+				}
+			}
+			lineInfos = append(lineInfos, lineInfo{absPath: absPath, name: name, commit: commit, branch: branch, isCwd: isCwd})
+		}
+	}
+
+	// Build result slice
+	result := make([]WorktreeInfo, 0, len(lineInfos))
+	for _, info := range lineInfos {
+		// Build display string with name, commit, and branch/ref info
+		var display string
+		if info.branch != "" {
+			display = fmt.Sprintf("%-20s %s [%s]", info.name, info.commit, info.branch)
+		} else {
+			display = fmt.Sprintf("%-20s %s", info.name, info.commit)
+		}
+		result = append(result, WorktreeInfo{
+			AbsPath: info.absPath,
+			Display: display,
+			Commit:  info.commit,
+			Branch:  info.branch,
+			IsCwd:   info.isCwd,
+		})
+	}
+
+	// Sort: Current dir first, then alphabetical by name
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].IsCwd {
 			return true
-		} // I comes first
-		if pathJ == cwd {
+		}
+		if result[j].IsCwd {
 			return false
-		} // J comes first (so I is later)
-
-		return pathI < pathJ // Alphabetical default
+		}
+		return result[i].Display < result[j].Display
 	})
 
-	return lines, nil
+	return result, nil
 }
 
 func findWorktreePathForBranch(branch string) (string, error) {
 	wts, _ := getWorktreesSorted()
-	for _, l := range wts {
-		if strings.Contains(l, "["+branch+"]") {
-			return strings.Fields(l)[0], nil
+	for _, wt := range wts {
+		if wt.Branch == branch {
+			return wt.AbsPath, nil
 		}
 	}
 	return "", fmt.Errorf("branch not found")

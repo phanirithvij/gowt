@@ -1,38 +1,86 @@
 ## What
 
-Vibe rewrite of https://github.com/gko/gwt/blob/master/gwt.sh
+Vibe rewrite of <https://github.com/gko/gwt/blob/master/gwt.sh>
 
 Licensed the same as the above project.
+
+## Quickstart
+
+To run this tool without innstalling it:
+
+```shellSession
+nix run github:phanirithvij/gowt
+```
 
 ## Install
 
 Don't use this, this is a quick vibed tool based on the above, use that if
 interested in such a tool.
 
-Only flakes + home-manager setup supported at this point.
+### Flakes
+
+Add the package to your nix flake inputs:
 
 ```nix
-# add it to your nix flake inputs
-# add an overlay
-(_: _: {
-  gwt = inputs.gowt.packages.${system}.default;
-})
+{
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-25.11";
+
+  inputs.gowt.url = "github:phanirithvij/gowt/dev";
+  inputs.gowt.inputs.nixpkgs.follows = "nixpkgs";
+}
 ```
 
-Then you need to do this in your home-manager config
+#### standalone
+
+Use the following module in your NixOS system:
 
 ```nix
+{
+  inputs,
+  pkgs,
+  ...
+}:
+{
+  nixpkgs.overlays = [
+    (final: prev: {
+      gwt = inputs.gowt.default;
+    })
+  ];
+
+  environment.systemPackages = [
+    pkgs.gwt
+  ];
+}
+```
+
+After rebuilding and switching your system, the tool will be available:
+
+```shellSession
+gwt
+```
+
+#### home-manager
+
+Use the following configuration, depending on which shell you want:
+
+```nix
+{
+  inputs,
+  ...
+}:
+{
   programs.fish.interactiveShellInit = ''
-    source ${pkgs.gwt}/share/gwt/gwt.fish
+    source ${inputs.gowt.gwt.fishWrapper}
     alias g gwt
   '';
 
   programs.bash.initExtra = ''
-    source ${pkgs.gwt}/share/gwt/gwt.sh
+    source ${inputs.gowt.gwt.shWrapper}
   '';
 
   programs.zsh.initContent = ''
-    source ${pkgs.gwt}/share/gwt/gwt.sh
+    source ${inputs.gowt.gwt.shWrapper}
     alias g=gwt
   '';
+}
 ```
